@@ -34,22 +34,27 @@ classdef SteeringController < handle
         % Constants section
         %------------------------------------------------------------------
         
-        % look ahead number of points;
+        % look ahead distance
         path_look_ahead = 3;
+        % look ahead number of points;
         samples_look_ahead;
+        % portion of path to track
         window_start = [];
         window_end = [];
+        
         %------------------------------------------------------------------
         % state vector containing pose of vehicle
         %------------------------------------------------------------------
+        
+        % current position of car [x y] in world frame 
         car_position = [];
+        % direction of car in world frame (psi)
         car_pose=[];
+        % current path index
         path_index = [];
         % sampling time
-        % this value is important for stability
-        % e.g., check the funny effects when h=0.1
         sampling_time = 0.01;
-        % wheel angle
+        % last wheel angle
         last_wheel_angle = 0;
         % wheel angle velociy hard limiter
         ws_limiter = deg2rad(45); %0.3; 10.9;
@@ -57,7 +62,9 @@ classdef SteeringController < handle
         max_angle = deg2rad(28);
         % selection of method.
         method = 'pure pursuit';
+        % reference path points
         map_points = [];
+        % length of reference path
         num_points = [];
         % wheel velocity proportional gain;
         Kp_ws = 0.01;
@@ -181,16 +188,23 @@ classdef SteeringController < handle
             % trajectory
             %--------------------------------------------------------------------------
             if isempty(obj.path_index)
+                % if it is the first time here, find the closest point in
+                % reference trajectory.
                 [~, index] = min(vecnorm(obj.map_points-repmat(obj.car_position,obj.num_points,1),2,2));
                 obj.path_index = index;
                 cumsum = 0;
                 index = 1;
+                % find the number of points required to fullfill the look
+                % ahead distance. 
                 while cumsum< obj.path_look_ahead && obj.path_index+index < obj.num_points
                     cumsum = cumsum+norm(obj.map_points(obj.path_index+index,:) - obj.map_points(obj.path_index+index-1,:));
                     index = index +1;
                 end
                 obj.samples_look_ahead = index-1;
             else
+                % after first point being discovered, search only for a
+                % limited window. If index is greater than one, slide
+                % window to front.
                 [~, index] = min(vecnorm(obj.map_points(obj.window_start:obj.window_end,:)-repmat(obj.car_position,obj.window_end-obj.window_start+1,1),2,2));
                 obj.path_index = obj.path_index+index-1;
             end
@@ -230,9 +244,11 @@ classdef SteeringController < handle
                 case 'pure pursuit'
                     psi = obj.car_pose; % angle of the car in world frame
                     obj.find_min();     % find closest point of trajectory
+                    %------------------------------------------------------
                     % get vector from car to look ahead
-                    direction_look_ahead = obj.map_points(obj.window_end,:)- obj.car_position;
                     % get angle between look ahead and car
+                    %------------------------------------------------------
+                    direction_look_ahead = obj.map_points(obj.window_end,:)- obj.car_position;
                     angle_look_ahead = atan2(direction_look_ahead(2),direction_look_ahead(1));
                     % get difference from two angles (vector look ahead and
                     % car direction).
@@ -241,15 +257,16 @@ classdef SteeringController < handle
                     % distance of look ahead vector
                     norm_look_ahead = norm(direction_look_ahead, 2);
                     
-                    % curvature of circle
+                    % curvature of circle to reach look ahead point
                     curvature = 2*sin(angle_diff)/norm_look_ahead;
                     % angle required to adjust car curvature to path
                     % see ref: http://dx.doi.org/10.4218/etrij.15.0114.0123
                     new_wheel_angle = atan(curvature*obj.wheel_base);
                     new_wheel_angle = obj.clip_angle(new_wheel_angle);
+                    
                     % calculate rate of change to avoid destroying the
-                    % mechanical parts. Assume same rate for falling and
-                    % rising.
+                    % mechanical parts. Assume same rate for "falling" and
+                    % "rising".
                     rate = (new_wheel_angle-obj.last_wheel_angle)/obj.sampling_time;
                     if abs(rate) > obj.rate_limiter
                         new_wheel_angle = sign(rate)*obj.sampling_time*obj.rate_limiter+obj.last_wheel_angle; 
