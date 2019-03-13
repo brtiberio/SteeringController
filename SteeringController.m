@@ -41,6 +41,8 @@ classdef SteeringController < handle
         % portion of path to track
         window_start = [];
         window_end = [];
+        % minimum distance from car to path
+        min_distance;
         
         %------------------------------------------------------------------
         % state vector containing pose of vehicle
@@ -66,12 +68,27 @@ classdef SteeringController < handle
         map_points = [];
         % length of reference path
         num_points = [];
+        %------------------------------------------------------------------
+        % gains related to Sequeira 
+        %------------------------------------------------------------------
+        Kp_dist = 0.01;
         % wheel velocity proportional gain;
         Kp_ws = 0.01;
         Kd_ws = 0.1;
+        %------------------------------------------------------------------
+        % Gains related to pure pursuit
+        % If equal to zero, lateral distance contribution is ignored.
+        %------------------------------------------------------------------
+        % pure pursuit gains and cumulative sum
+        Kp = 0;
+        Ki = 0;
+        cumsum_dist = 0;
+        
+        
         wheel_base = 2.2;
         last_angle_diff = 0;
         ws_smooth = 0;
+        
         % steering velociy hard limiter
         rate_limiter = deg2rad(12);
         
@@ -190,7 +207,7 @@ classdef SteeringController < handle
             if isempty(obj.path_index)
                 % if it is the first time here, find the closest point in
                 % reference trajectory.
-                [~, index] = min(vecnorm(obj.map_points-repmat(obj.car_position,obj.num_points,1),2,2));
+                [min_distance, index] = min(vecnorm(obj.map_points-repmat(obj.car_position,obj.num_points,1),2,2));
                 obj.path_index = index;
                 cumsum = 0;
                 index = 1;
@@ -205,12 +222,13 @@ classdef SteeringController < handle
                 % after first point being discovered, search only for a
                 % limited window. If index is greater than one, slide
                 % window to front.
-                [~, index] = min(vecnorm(obj.map_points(obj.window_start:obj.window_end,:)-repmat(obj.car_position,obj.window_end-obj.window_start+1,1),2,2));
+                [min_distance, index] = min(vecnorm(obj.map_points(obj.window_start:obj.window_end,:)-repmat(obj.car_position,obj.window_end-obj.window_start+1,1),2,2));
                 obj.path_index = obj.path_index+index-1;
             end
             % get window for look ahead distance
             obj.window_start = obj.path_index;
             obj.window_end = min(obj.path_index+obj.samples_look_ahead, obj.num_points);
+            obj.min_distance = min_distance;
             
         end
         
@@ -220,16 +238,24 @@ classdef SteeringController < handle
                      % for easy understanding
                      psi = obj.car_pose;
                      obj.find_min();
+                     %------------------------------------------------------
+                     % get vector from car to look ahead
+                     % get angle between look ahead and car
+                     %------------------------------------------------------
                      direction_look_ahead = obj.map_points(obj.window_end,:)- obj.car_position;
                      angle_look_ahead = atan2(direction_look_ahead(2),direction_look_ahead(1));
+                     % get difference from two angles (vector look ahead and
+                     % car direction).
                      angle_diff = (angle_look_ahead-psi);
                      angle_diff = obj.normalize_angle(angle_diff);
+                     
                      
                      % compute derivative term
                      dot_angle_diff = (angle_diff - obj.last_angle_diff) / obj.sampling_time;
                      
+                     dist_to_look_ahead = norm(direction_look_ahead);
                      % steering wheel speed
-                     ws = obj.Kd_ws*dot_angle_diff + obj.Kp_ws*angle_diff;
+                     ws = obj.Kp_dist*dist_to_look_ahead + obj.Kd_ws*dot_angle_diff + obj.Kp_ws*angle_diff;
                      ws_smooth = 0.9*obj.ws_smooth + 0.1*ws;
                      % limit max velocity
                      ws_smooth = obj.clip_wheel_speed(ws_smooth);
@@ -241,9 +267,11 @@ classdef SteeringController < handle
                      obj.last_wheel_angle = new_wheel_angle;
                      varargout = {new_wheel_angle, ws_smooth};
                 case 'stanley'
+                    % todo
                 case 'pure pursuit'
                     psi = obj.car_pose; % angle of the car in world frame
                     obj.find_min();     % find closest point of trajectory
+                    obj.cumsum_dist = obj.cumsum_dist + obj.min_distance*obj.sampling_time;
                     %------------------------------------------------------
                     % get vector from car to look ahead
                     % get angle between look ahead and car
@@ -261,9 +289,13 @@ classdef SteeringController < handle
                     curvature = 2*sin(angle_diff)/norm_look_ahead;
                     % angle required to adjust car curvature to path
                     % see ref: http://dx.doi.org/10.4218/etrij.15.0114.0123
-                    new_wheel_angle = atan(curvature*obj.wheel_base);
-                    new_wheel_angle = obj.clip_angle(new_wheel_angle);
+                    curvature_angle = atan(curvature*obj.wheel_base);
                     
+                    
+                    % get angle based in lateral distance of rear wheel
+                    dist_angle = sign(angle_diff)*(obj.Kp*obj.min_distance +obj.Ki*obj.cumsum_dist);
+                    
+                    new_wheel_angle = obj.clip_angle(curvature_angle+dist_angle);
                     % calculate rate of change to avoid destroying the
                     % mechanical parts. Assume same rate for "falling" and
                     % "rising".
